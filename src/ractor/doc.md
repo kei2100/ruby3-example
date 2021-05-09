@@ -37,6 +37,7 @@ summary
 
 * `Ractor#send(obj)` と `Ractor.receive()` で Ractor 間のメッセージパッシングを行うことができる
 * Ractor には無限の受信キューがあり、送信側は `Ractor#send(obj)` によりブロックすることはない
+* 受信側は `Ractor.receive()` によりキューに届いたメッセージを受信する。キューが空の場合はブロックする  
 * 受信側は `Ractor.receive_if{ filter_expr }` により、`filter_expr` に一致するメッセージのみ受信することができる
 
 #### pull-type communication
@@ -44,6 +45,7 @@ summary
 * `Ractor.yield(obj)` と `Ractor#take()` を使う
 * 送信側の Ractor が `Ractor.yield(obj)` する。受信側は送信側 Ractor に対し `Ractor#take()` することで `obj` を受け取ることができる
 * `Ractor.yield(obj)` と `Ractor#take()` は、それぞれの Ractor 間でメッセージ交換が行われるまでブロックする
+* 複数の Ractor が `Ractor#take()` で受信待ちしている場合、`Ractor.yield(obj)` によるメッセージは唯一つの Ractor に対し送信される
 * `pul-type communication`  では、送信側が受信者の Ractor を知っている必要があり、受信側は送信者を知る必要がなかったのに対し、`pull-type communication` では逆となり、
   送信側は受信者 Ractor を知る必要がなく、受信側が送信者を知っている必要がる、というプロトコルになっている
 
@@ -79,11 +81,23 @@ end
 r.take #=> 'ok'
 ```
 
+### Communication between Ractors using sharable container objects
+
+* Ractor 間のコミュニケーションは、これまで説明した push-type/pull-type のメッセージ交換により行うことが基本だが、
+  共有可能なコンテナオブジェクトを介してコミュニケーションする方法もある
+* Ractor::TVar gem (ko1/ractor-tvar) を使うと、そのような共有可能コンテナオブジェクトによるコミュニケーションが可能になる
+
 ### Copy & Move semantics to send messages
 
 * `unsharable-objects` をメッセージ交換すると、そのオブジェクトは `copy` もしくは `move` される
 * `copy` はディーブコピーされる。`move` はメンバーシップが移動される。送信者によりオブジェクトのメンバーシップが移動されると、送信者はそのオブジェクトにアクセスすることはできなくなる
 * これらのメカニズムにより、ある時点において、一つのオブジェクトにはただ一つの Ractor のみがアクセスすることが保証される
+* 上記含め、オブジェクトのメッセージ送信方法は以下の3種類が用意されている
+  * `sharable-objects` への参照を送信する方法（高速）
+  * `unsharable-objects` を `copy` で送信する方法（低速）
+  * `unsharable-objects` を `move` で送信する方法
+* `unsharable-objects` はデフォルトでは `copy` で送信されるが、`Ractor#send(obj, move: true/false)` と `Ractor.yield(obj, move: true/false)` で `move:` キーワードの値を指定することにより、
+  `copy` ではなく `move` で送信することができる
 
 ### Thread-safety
 
@@ -185,3 +199,12 @@ rescue Ractor::RemoteError => e
   e.ractor        #=> r
 end
 ```
+
+Communication between Ractors
+==
+### Sending/Receiving ports
+
+* すべての Ractor は `incoming-port` と `outgoing-port` のメッセージキューを持つ
+* `incoming-port` は受信サイズが無制限で、`Ractor#send(obj)` でメッセージを送信する側はブロックされることはない
+
+TODO
