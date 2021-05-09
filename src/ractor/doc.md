@@ -1,5 +1,7 @@
 > https://docs.ruby-lang.org/en/3.0.0/doc/ractor_md.html
 
+summary
+==
 ### Multiple Ractors in an interpreter process
 
 * `Ractor.new { expr }` すると、Ractor が生成され、expr が並列に実行される
@@ -11,3 +13,175 @@
     GVL を解放し、その間複数スレッドで動作するような実装になっている
 * が、異なる Ractor 間では、複数のネイティブスレッドで動作することができる
 * Ractor を作成するオーバーヘッドは Thread と同等
+
+### Limited sharing between multiple ractors
+
+* Thread と異なり、Ractor 間では共有できないものが多く存在する（それによりスレッドセーフ性を実現する）
+* いくつかのオブジェクトを除き、ほとんどのオブジェクトは共有することができない
+* *unsharable-objects* を参照しない Frozen されたオブジェクトは *immutable objects* となり、Ractor 間で共有することができる
+  * i = 123: i is an immutable object.
+  * s = "str".freeze: s is an immutable object.
+  * a = [1, [2], 3].freeze: a is not an immutable object because a refers unshareable-object [2] (which is not frozen).
+  * h = {c: Object}.freeze: h is an immutable object because h refers Symbol :c and shareable Object class object which is not frozen.
+* Class/Module は共有することができる
+* また以下のオブジェクトは特別に共有することができる
+  * Ractor オブジェクト自体
+  * (and more...)
+
+### Two-types communication between Ractors
+
+* Ractor 間はメッセージを交換し合うことで情報を同期する
+* メッセージ交換のプロトコルは *push-type* と *pull type* がある
+
+#### push-type communication
+
+* `Ractor#send(obj)` と `Ractor.receive()` で Ractor 間のメッセージパッシングを行うことができる
+* Ractor には無限の受信キューがあり、送信側は `Ractor#send(obj)` によりブロックすることはない
+* 受信側は `Ractor.receive_if{ filter_expr }` により、`filter_expr` に一致するメッセージのみ受信することができる
+
+#### pull-type communication
+
+* `Ractor.yield(obj)` と `Ractor#take()` を使う
+* 送信側の Ractor が `Ractor.yield(obj)` する。受信側は送信側 Ractor に対し `Ractor#take()` することで `obj` を受け取ることができる
+* `Ractor.yield(obj)` と `Ractor#take()` は、それぞれの Ractor 間でメッセージ交換が行われるまでブロックする
+* `pul-type communication`  では、送信側が受信者の Ractor を知っている必要があり、受信側は送信者を知る必要がなかったのに対し、`pull-type communication` では逆となり、
+  送信側は受信者 Ractor を知る必要がなく、受信側が送信者を知っている必要がる、というプロトコルになっている
+
+#### messaging examples
+
+```ruby
+r = Ractor.new do
+    msg = Ractor.receive # Receive from r's incoming queue
+    msg # send back msg as block return value
+end
+
+r.send 'ok' # Send 'ok' to r's incoming port -> incoming queue
+r.take      # Receive from r's outgoing port
+```
+
+Ractor 間のメッセージ交換は以下のような関係になる。
+
+```
+  +------+        +---+
+  * main |------> * r *---+
+  +-----+         +---+   |
+      ^                   |
+      +-------------------+
+```
+
+`Ractor.yield(obj)` の例は以下の通り。
+
+```ruby
+r = Ractor.new do
+  Ractor.yield 'ok'
+  p 'done'
+end
+r.take #=> 'ok'
+```
+
+### Copy & Move semantics to send messages
+
+* `unsharable-objects` をメッセージ交換すると、そのオブジェクトは `copy` もしくは `move` される
+* `copy` はディーブコピーされる。`move` はメンバーシップが移動される。送信者によりオブジェクトのメンバーシップが移動されると、送信者はそのオブジェクトにアクセスすることはできなくなる
+* これらのメカニズムにより、ある時点において、一つのオブジェクトにはただ一つの Ractor のみがアクセスすることが保証される
+
+### Thread-safety
+
+* `Ractor` は、これまで記述したような仕組みにより、スレッドセーフな並行プログラム作成の手助けをするが、書き方によってはスレッドセーフでないプログラムも作成できてしまう
+* Class/Module は複数 Ractor に共有されるので、複数の Ractor がそれらを変更するようなコードは注意する必要がある
+* `Ractor` にはブロックされる操作があるので（waiting send, waiting yield and waiting take）、デッドロックやライブロックが発生しないように注意する必要がある
+
+Creation and termination
+==
+### Ractor.new
+
+```ruby
+# Ractor.new with a block creates new Ractor
+r = Ractor.new do
+  # This block will be run in parallel with other ractors
+end
+
+# You can name a Ractor with `name:` argument.
+r = Ractor.new name: 'test-name' do
+end
+
+# and Ractor#name returns its name.
+r.name #=> 'test-name'
+```
+
+```ruby
+# The self of the given block is Ractor object itself.
+r = Ractor.new do
+  p self.class #=> Ractor
+  self.object_id
+end
+r.take == self.object_id #=> false
+```
+
+```ruby
+# Passed arguments to Ractor.new() becomes block parameters for the given block
+# ブロックパラメータはオブジェクトの参照を渡すのではなく、メッセージとして送信されることに注意すること
+
+r = Ractor.new 'ok' do |msg|
+  msg #=> 'ok'
+end
+r.take #=> 'ok'
+
+# almost similar to the last example
+r = Ractor.new do
+  msg = Ractor.receive
+  msg
+end
+r.send 'ok'
+r.take #=> 'ok'
+```
+
+### Given block isolation
+
+* `Ractor.new { expr }` で、expr は `Proc#isolate` により外部のスコープから分離される
+* これにより、他の Ractor から `unsharable-objects` がアクセスされることを防止する
+* `Ractor.new` のタイミングで `Proc#isolate` が呼び出される（Ruby ユーザーには今の所非公開）。
+  与えられた Proc オブジェクト（`{ expr }` の箇所）が、外部の `unsharable-objects` を参照しているなどの理由で隔離できない場合、
+  エラーが発生する。
+
+```ruby
+begin
+  a = true
+  r = Ractor.new do
+    a #=> ArgumentError because this block accesses `a`.
+  end
+  r.take # see later
+rescue ArgumentError
+end
+```
+
+### An execution result of given block
+
+```ruby
+r = Ractor.new do
+  'ok'
+end
+r.take #=> `ok`
+
+# almost similar to the last example
+r = Ractor.new do
+  Ractor.yield 'ok'
+end
+r.take #=> 'ok'
+```
+
+Ractor で発生したエラーは、その Ractor のメッセージの受信者に伝播される
+
+```ruby
+r = Ractor.new do
+  raise 'ok' # exception will be transferred to the receiver
+end
+
+begin
+  r.take
+rescue Ractor::RemoteError => e
+  e.cause.class   #=> RuntimeError
+  e.cause.message #=> 'ok'
+  e.ractor        #=> r
+end
+```
