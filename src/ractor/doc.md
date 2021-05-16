@@ -204,7 +204,95 @@ Communication between Ractors
 ==
 ### Sending/Receiving ports
 
-* すべての Ractor は `incoming-port` と `outgoing-port` のメッセージキューを持つ
-* `incoming-port` は受信サイズが無制限で、`Ractor#send(obj)` でメッセージを送信する側はブロックされることはない
+すべての Ractor は `incoming-port` と `outgoing-port` のメッセージキューを持つ
+`incoming-port` は受信サイズが無制限で、`Ractor#send(obj)` でメッセージを送信する側はブロックされることはない
+
+```ruby
+r = Ractor.new do
+  msg = Ractor.receive # Receive from r's incoming queue
+  msg # send back msg as block return value
+end
+r.send 'ok' # Send 'ok' to r's incoming port -> incoming queue
+r.take      # Receive from r's outgoing port
+```
+
+上記コードでの Ractor 間のメッセージ交換は以下のような関係になる。
+
+```
+  +------+        +---+
+  * main |------> * r *---+
+  +-----+         +---+   |
+      ^                   |
+      +-------------------+
+```
+
+`Ractor.new` に引数としてメッセージを渡すこともできるので、上記コードは以下のようにも書くことができる。
+
+```ruby
+# Actual argument 'ok' for `Ractor.new()` will be send to created Ractor.
+r = Ractor.new 'ok' do |msg|
+  # Values for formal parameters will be received from incoming queue.
+  # Similar to: msg = Ractor.receive
+
+  msg # Return value of the given block will be sent via outgoing port
+end
+
+# receive from the r's outgoing port.
+r.take #=> `ok`
+```
+
+### Return value of a block for Ractor.new
+
+すでに説明したように、`Ractor.new { expr }` の expr は `Ractor#take` で取得することができる。
+
+```ruby
+Ractor.new{ 42 }.take #=> 42
+```
+
+Ractor のブロックに返り値があるとき、すでにその Ractor は死んでいるので、通常であれば他の Ractor からはアクセスできないようなオブジェクトも返却することができる
+
+```ruby
+r = Ractor.new do
+  a = "hello"
+  binding
+end
+
+r.take.eval("p a") #=> "hello" (other communication path can not send a Binding object directly)
+```
+
+### Wait for multiple Ractors with Ractor.select
+
+`Ractor.select` で複数の Ractor の `yield` を待つことができる
+
+```ruby
+# Wait for single Ractor:
+r1 = Ractor.new{'r1'}
+
+r, obj = Ractor.select(r1)
+r == r1 and obj == 'r1' #=> true
+
+
+# Wait for two ractors:
+r1 = Ractor.new{'r1'}
+r2 = Ractor.new{'r2'}
+rs = [r1, r2]
+as = []
+
+# Wait for r1 or r2's Ractor.yield
+r, obj = Ractor.select(*rs)
+rs.delete(r)
+as << obj
+
+# Second try (rs only contain not-closed ractors)
+r, obj = Ractor.select(*rs)
+rs.delete(r)
+as << obj
+as.sort == ['r1', 'r2'] #=> true 
+```
+
+* TODO: Current Ractor.select() has the same issue of select(2), so this interface should be refined.
+* TODO: select syntax of go-language uses round-robin technique to make fair scheduling. Now Ractor.select() doesn't use it.
+
+### Closing Ractor's ports
 
 TODO
