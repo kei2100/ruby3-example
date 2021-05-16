@@ -18,7 +18,7 @@ summary
 
 * Thread と異なり、Ractor 間では共有できないものが多く存在する（それによりスレッドセーフ性を実現する）
 * いくつかのオブジェクトを除き、ほとんどのオブジェクトは共有することができない
-* *unsharable-objects* を参照しない Frozen されたオブジェクトは *immutable objects* となり、Ractor 間で共有することができる
+* *unshareable-objects* を参照しない Frozen されたオブジェクトは *immutable objects* となり、Ractor 間で共有することができる
   * i = 123: i is an immutable object.
   * s = "str".freeze: s is an immutable object.
   * a = [1, [2], 3].freeze: a is not an immutable object because a refers unshareable-object [2] (which is not frozen).
@@ -81,7 +81,7 @@ end
 r.take #=> 'ok'
 ```
 
-### Communication between Ractors using sharable container objects
+### Communication between Ractors using shareable container objects
 
 * Ractor 間のコミュニケーションは、これまで説明した push-type/pull-type のメッセージ交換により行うことが基本だが、
   共有可能なコンテナオブジェクトを介してコミュニケーションする方法もある
@@ -89,14 +89,14 @@ r.take #=> 'ok'
 
 ### Copy & Move semantics to send messages
 
-* `unsharable-objects` をメッセージ交換すると、そのオブジェクトは `copy` もしくは `move` される
+* `unshareable-objects` をメッセージ交換すると、そのオブジェクトは `copy` もしくは `move` される
 * `copy` はディーブコピーされる。`move` はメンバーシップが移動される。送信者によりオブジェクトのメンバーシップが移動されると、送信者はそのオブジェクトにアクセスすることはできなくなる
 * これらのメカニズムにより、ある時点において、一つのオブジェクトにはただ一つの Ractor のみがアクセスすることが保証される
 * 上記含め、オブジェクトのメッセージ送信方法は以下の3種類が用意されている
-  * `sharable-objects` への参照を送信する方法（高速）
-  * `unsharable-objects` を `copy` で送信する方法（低速）
-  * `unsharable-objects` を `move` で送信する方法
-* `unsharable-objects` はデフォルトでは `copy` で送信されるが、`Ractor#send(obj, move: true/false)` と `Ractor.yield(obj, move: true/false)` で `move:` キーワードの値を指定することにより、
+  * `shareable-objects` への参照を送信する方法（高速）
+  * `unshareable-objects` を `copy` で送信する方法（低速）
+  * `unshareable-objects` を `move` で送信する方法
+* `unshareable-objects` はデフォルトでは `copy` で送信されるが、`Ractor#send(obj, move: true/false)` と `Ractor.yield(obj, move: true/false)` で `move:` キーワードの値を指定することにより、
   `copy` ではなく `move` で送信することができる
 
 ### Thread-safety
@@ -153,9 +153,9 @@ r.take #=> 'ok'
 ### Given block isolation
 
 * `Ractor.new { expr }` で、expr は `Proc#isolate` により外部のスコープから分離される
-* これにより、他の Ractor から `unsharable-objects` がアクセスされることを防止する
+* これにより、他の Ractor から `unshareable-objects` がアクセスされることを防止する
 * `Ractor.new` のタイミングで `Proc#isolate` が呼び出される（Ruby ユーザーには今の所非公開）。
-  与えられた Proc オブジェクト（`{ expr }` の箇所）が、外部の `unsharable-objects` を参照しているなどの理由で隔離できない場合、
+  与えられた Proc オブジェクト（`{ expr }` の箇所）が、外部の `unshareable-objects` を参照しているなどの理由で隔離できない場合、
   エラーが発生する。
 
 ```ruby
@@ -294,5 +294,142 @@ as.sort == ['r1', 'r2'] #=> true
 * TODO: select syntax of go-language uses round-robin technique to make fair scheduling. Now Ractor.select() doesn't use it.
 
 ### Closing Ractor's ports
+
+* `Ractor#close_incoming/outgoing` でそれぞれのメッセージキューをクローズすることができる
+* incoming-port がクローズされた Ractor に `r.send(obj)` することはできず、例外が raise される
+* incoming-port がクローズされた Ractor が `Ractor.receive` した場合、キューが空であれば例外が raise される
+* outgoing-port がクローズされた Ractor が `Ractor.yield` すると、例外が raise される
+* outgoing-port がクローズされた Ractor に対し `r.take` すると、例外が raise される。ブロック中の場合も例外が raise される
+* 終了した Ractor の port は自動的にクローズされる
+
+```ruby
+# try to take from closed Ractor
+r = Ractor.new do
+    'finish'
+end
+r.take # success (will return 'finish')
+begin
+  o = r.take # try to take from closed Ractor
+rescue Ractor::ClosedError
+  'ok'
+else
+  "ng: #{o}"
+end
+
+# try to send to closed (terminated) Ractor
+r = Ractor.new do
+end
+
+r.take # wait terminate
+
+begin
+  r.send(1)
+rescue Ractor::ClosedError
+  'ok'
+else
+  'ng'
+end
+```
+
+### Send a message by copying
+
+* unshareble-object を `r.send(obj)` あるいは `Ractor.yield(obj)` すると、値がディープコピーが送信される
+* いくつかの object は値のコピーをサポートしておらず例外を raise する
+
+```ruby
+obj = 'str'.dup
+r = Ractor.new obj do |msg|
+  # return received msg's object_id
+  msg.object_id
+end
+
+obj.object_id == r.take #=> false
+
+# Thread object is not supported to copy the value
+obj = Thread.new{}
+begin
+  Ractor.new obj do |msg|
+    msg
+  end
+rescue TypeError => e
+  e.message #=> #<TypeError: allocator undefined for Thread>
+else
+  'ng' # unreachable here
+end
+```
+
+### Send a message by moving
+
+* `Ractor#send(obj, move: true)` あるいは `Ractor.yield(obj, move: true)` すると、ディープコピーではなく、
+  `obj` のメンバーシップを送信先の Ractor へ move して渡すことができる
+* 送信元の Ractor からすでに move された `obj` を参照しようとするとエラーになる
+
+```ruby
+# move with Ractor#send
+r = Ractor.new do
+  obj = Ractor.receive
+  obj << ' world'
+end
+
+str = 'hello'
+r.send str, move: true
+modified = r.take #=> 'hello world'
+
+# str is moved, and accessing str from this Ractor is prohibited
+
+begin
+  # Error because it touches moved str.
+  str << ' exception' # raise Ractor::MovedError
+rescue Ractor::MovedError
+  modified #=> 'hello world'
+else
+  raise 'unreachable'
+end
+
+# move with Ractor.yield
+r = Ractor.new do
+  obj = 'hello'
+  Ractor.yield obj, move: true
+  obj << 'world'  # raise Ractor::MovedError
+end
+
+str = r.take
+begin
+  r.take
+rescue Ractor::RemoteError
+  p str #=> "hello"
+end
+```
+
+* いくつかのオブジェクトは move をサポートしない
+
+```ruby
+r = Ractor.new do
+  Ractor.receive
+end
+
+r.send(Thread.new{}, move: true) #=> allocator undefined for Thread (TypeError)
+```
+
+### Shareable objects
+
+以下のオブジェクトは shareable-object である
+
+* Immutable objects
+* Small integers, some symbols, true, false, nil (a.k.a. SPECIAL_CONST_P() objects in internal)
+* Frozen native objects
+  * Numeric objects: Float, Complex, Rational, big integers (T_BIGNUM in internal)
+  * All Symbols.
+* Frozen String and Regexp objects (their instance variables should refer only sharble objects)
+* Class, Module objects (T_CLASS, T_MODULE and T_ICLASS in internal)
+* Ractor and other special objects which care about synchronization.
+
+shareable-object の作成をサポートするめに、`Ractor.make_shareable(obj)` メソッドが提供されている
+
+* `Ractor.make_shareble(obj, copy: false)` すると、obj とその中身を再帰的に freeze して move 可能な shareable-object を作成しようとする。`copy:` キーワードのデフォルトは false
+* `Ractor.make_sharable(obj, copy: true)` すると、obj をディープコピーしたオブジェクトを shareable-object にしようとする
+
+Language changes to isolate unshareable objects between Ractors
+==
 
 TODO
