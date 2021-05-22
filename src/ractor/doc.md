@@ -432,4 +432,96 @@ shareable-object の作成をサポートするめに、`Ractor.make_shareable(o
 Language changes to isolate unshareable objects between Ractors
 ==
 
-TODO
+### Global Variables
+
+* グローバル変数には main Ractor のみアクセス可能
+* ただし、$stdin/$stdout/$stderr については ractor-local になる
+
+### Instance variables of shareable-objects
+
+* main Ractor のみが shareable-objects のインスタンス変数にアクセス可能
+* クラス/モジュールオブジェクトのインスタンス変数も禁止されていることに注意
+
+```ruby
+class C
+  @iv = 'str'
+end
+
+r = Ractor.new do
+  class C
+    p @iv
+  end
+end
+
+
+begin
+  r.take
+rescue => e
+  e.class #=> Ractor::IsolationError
+end
+
+shared = Ractor.new{}
+shared.instance_variable_set(:@iv, 'str')
+
+r = Ractor.new shared do |shared|
+  p shared.instance_variable_get(:@iv)
+end
+
+begin
+  r.take
+rescue Ractor::RemoteError => e
+  e.cause.message #=> can not access instance variables of shareable objects from non-main Ractors (Ractor::IsolationError)
+end
+```
+
+### Class variables
+
+* main Ractor のみがクラス変数にアクセス可能
+
+```ruby
+class C
+  @@cv = 'str'
+end
+
+r = Ractor.new do
+  class C
+    p @@cv
+  end
+end
+
+begin
+  r.take
+rescue => e
+  e.class #=> Ractor::IsolationError
+end
+```
+
+### Constants
+
+* unshareable-objects を参照する定数には main Ractor からしかアクセスできない
+* また main Ractor のみが unshareble-objects を参照する定数を定義できる
+
+```ruby
+class C
+  CONST = 'str'
+end
+r = Ractor.new do
+  C::CONST
+end
+begin
+  r.take
+rescue => e
+  e.class #=> Ractor::IsolationError
+end
+
+class C
+end
+r = Ractor.new do
+  C::CONST = 'str'
+end
+begin
+  r.take
+rescue => e
+  e.class #=> Ractor::IsolationError
+end
+```
