@@ -1,5 +1,7 @@
 > https://docs.ruby-lang.org/en/3.0.0/doc/ractor_md.html
 
+Ractor
+=
 summary
 ==
 ### Multiple Ractors in an interpreter process
